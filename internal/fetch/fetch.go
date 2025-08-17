@@ -20,9 +20,10 @@ type Fetcher struct {
 }
 
 type FetchResult struct {
-	Path     string
-	Checksum string
-	Version  string
+	Path      string
+	Checksum  string
+	Version   string
+	CommitSHA string
 }
 
 func NewFetcher() *Fetcher {
@@ -32,7 +33,6 @@ func NewFetcher() *Fetcher {
 	}
 }
 
-// checkTagExists checks if a tag exists in the remote repository
 func (f *Fetcher) checkTagExists(owner, repo, tag string) (bool, error) {
 	repoURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
 	
@@ -53,18 +53,63 @@ func (f *Fetcher) getLatestReleaseTag(owner, repo string) (string, error) {
 	return release.TagName, nil
 }
 
-func (f *Fetcher) determineRefWithValidation(owner, repo string, dep manifest.Dependency) (string, string, error) {
+func (f *Fetcher) getLatestCommitSHA(owner, repo string) (string, error) {
+	repoURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+
+	cmd := exec.Command("git", "ls-remote", repoURL, "refs/heads/main")
+	output, err := cmd.Output()
+	if err == nil && len(strings.TrimSpace(string(output))) > 0 {
+		parts := strings.Fields(string(output))
+		if len(parts) > 0 {
+			return parts[0], nil
+		}
+	}
+
+	cmd = exec.Command("git", "ls-remote", repoURL, "refs/heads/master")
+	output, err = cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get latest commit: %w", err)
+	}
+	
+	parts := strings.Fields(string(output))
+	if len(parts) == 0 {
+		return "", fmt.Errorf("no commit found in master branch")
+	}
+	
+	return parts[0], nil
+}
+
+func (f *Fetcher) determineRefWithValidation(owner, repo string, dep manifest.Dependency) (string, string, string, error) {
 	if dep.Rev != "" {
-		return dep.Rev, dep.Rev, nil
+		return dep.Rev, dep.Rev, dep.Rev, nil
 	}
 	if dep.Tag != "" {
-		return dep.Tag, dep.Tag, nil
+		return dep.Tag, dep.Tag, "", nil
 	}
 	if dep.Branch != "" {
-		return dep.Branch, dep.Branch, nil
+		return dep.Branch, dep.Branch, "", nil
+	}
+	
+	if dep.UseLatestCommit {
+		logger.Info("Fetching latest commit...")
+		commitSHA, err := f.getLatestCommitSHA(owner, repo)
+		if err != nil {
+			return "", "", "", fmt.Errorf("failed to get latest commit: %w", err)
+		}
+		logger.Debug("Latest commit SHA: %s", commitSHA)
+		return commitSHA, commitSHA, commitSHA, nil
 	}
 	
 	if dep.Version != "" {
+		if dep.Version == "latest" {
+			latestTag, err := f.getLatestReleaseTag(owner, repo)
+			if err != nil {
+				return "", "", "", fmt.Errorf("failed to get latest release: %w", err)
+			}
+			logger.Debug("Using latest release tag: %s", latestTag)
+			return latestTag, latestTag, "", nil
+		}
+		
 		version := strings.TrimPrefix(dep.Version, "^")
 		version = strings.TrimPrefix(version, "~")
 		version = strings.TrimPrefix(version, "=")
@@ -81,21 +126,25 @@ func (f *Fetcher) determineRefWithValidation(owner, repo string, dep manifest.De
 				continue
 			}
 			if exists {
-				return tag, dep.Version, nil
+				return tag, dep.Version, "", nil
 			}
 		}
 		
-		return "", "", fmt.Errorf("no matching tag found for version %s (tried: %s)", dep.Version, strings.Join(possibleTags, ", "))
+		return "", "", "", fmt.Errorf("no matching tag found for version %s (tried: %s)", dep.Version, strings.Join(possibleTags, ", "))
 	}
 
 	latestTag, err := f.getLatestReleaseTag(owner, repo)
 	if err == nil && latestTag != "" {
 		logger.Debug("Using latest release tag: %s", latestTag)
-		return latestTag, latestTag, nil
+		return latestTag, latestTag, "", nil
 	}
-	
-	logger.Debug("No releases found, using main branch")
-	return "main", "main", nil
+
+	logger.Debug("No releases found, using latest commit")
+	commitSHA, err := f.getLatestCommitSHA(owner, repo)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to get latest commit: %w", err)
+	}
+	return commitSHA, commitSHA, commitSHA, nil
 }
 
 func (f *Fetcher) FetchDependency(name string, dep manifest.Dependency) (*FetchResult, error) {
@@ -111,13 +160,14 @@ func (f *Fetcher) FetchDependency(name string, dep manifest.Dependency) (*FetchR
 	if cached, exists := f.cache.Get(cacheKey); exists {
 		logger.Debug("Using cached version of '%s'", name)
 		return &FetchResult{
-			Path:     cached.Path,
-			Checksum: cached.Checksum,
-			Version:  cached.Version,
+			Path:      cached.Path,
+			Checksum:  cached.Checksum,
+			Version:   cached.Version,
+			CommitSHA: cached.CommitSHA,
 		}, nil
 	}
 	
-	ref, resolvedVersion, err := f.determineRefWithValidation(owner, repo, dep)
+	ref, resolvedVersion, commitSHA, err := f.determineRefWithValidation(owner, repo, dep)
 	if err != nil {
 		return nil, fmt.Errorf("failed to determine reference for '%s': %w", name, err)
 	}
@@ -133,18 +183,24 @@ func (f *Fetcher) FetchDependency(name string, dep manifest.Dependency) (*FetchR
 	}
 
 	result := &FetchResult{
-		Path:     repoPath,
-		Checksum: checksum,
-		Version:  resolvedVersion,
+		Path:      repoPath,
+		Checksum:  checksum,
+		Version:   resolvedVersion,
+		CommitSHA: commitSHA,
 	}
 
 	f.cache.Set(cacheKey, cache.Entry{
-		Path:     repoPath,
-		Checksum: checksum,
-		Version:  resolvedVersion,
+		Path:      repoPath,
+		Checksum:  checksum,
+		Version:   resolvedVersion,
+		CommitSHA: commitSHA,
 	})
 
-	logger.Success("Successfully fetched '%s@%s'", name, resolvedVersion)
+	if commitSHA != "" {
+		logger.Success("Successfully fetched '%s@%s' (commit: %s)", name, resolvedVersion, commitSHA[:8])
+	} else {
+		logger.Success("Successfully fetched '%s@%s'", name, resolvedVersion)
+	}
 	return result, nil
 }
 
@@ -162,26 +218,39 @@ func (f *Fetcher) cloneRepository(owner, repo, ref string) (string, error) {
 
 	logger.Debug("Cloning %s@%s to %s", repoURL, ref, targetDir)
 
-	cmd := exec.Command("git", "clone", "--depth=1", "--branch", ref, repoURL, targetDir)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		if strings.Contains(string(output), "does not exist") || strings.Contains(string(output), "not found") {
-			logger.Debug("Shallow clone failed, trying full clone: %s", string(output))
+	if len(ref) == 40 && isHexString(ref) {
+		cmd := exec.Command("git", "clone", repoURL, targetDir)
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("failed to clone repository: %w", err)
+		}
 
-			os.RemoveAll(targetDir)
-			
-			cmd = exec.Command("git", "clone", repoURL, targetDir)
-			if err := cmd.Run(); err != nil {
+		cmd = exec.Command("git", "checkout", ref)
+		cmd.Dir = targetDir
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("failed to checkout commit '%s': %w", ref, err)
+		}
+	} else {
+		cmd := exec.Command("git", "clone", "--depth=1", "--branch", ref, repoURL, targetDir)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			if strings.Contains(string(output), "does not exist") || strings.Contains(string(output), "not found") {
+				logger.Debug("Shallow clone failed, trying full clone: %s", string(output))
+
+				os.RemoveAll(targetDir)
+				
+				cmd = exec.Command("git", "clone", repoURL, targetDir)
+				if err := cmd.Run(); err != nil {
+					return "", fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, output)
+				}
+
+				cmd = exec.Command("git", "checkout", ref)
+				cmd.Dir = targetDir
+				if err := cmd.Run(); err != nil {
+					return "", fmt.Errorf("failed to checkout ref '%s': %w", ref, err)
+				}
+			} else {
 				return "", fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, output)
 			}
-
-			cmd = exec.Command("git", "checkout", ref)
-			cmd.Dir = targetDir
-			if err := cmd.Run(); err != nil {
-				return "", fmt.Errorf("failed to checkout ref '%s': %w", ref, err)
-			}
-		} else {
-			return "", fmt.Errorf("failed to clone repository: %w\nOutput: %s", err, output)
 		}
 	}
 	
@@ -189,6 +258,15 @@ func (f *Fetcher) cloneRepository(owner, repo, ref string) (string, error) {
 	os.RemoveAll(gitDir)
 
 	return targetDir, nil
+}
+
+func isHexString(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func generateCacheKey(owner, repo string, dep manifest.Dependency) string {
@@ -203,6 +281,8 @@ func generateCacheKey(owner, repo string, dep manifest.Dependency) string {
 		parts = append(parts, "branch", dep.Branch)
 	} else if dep.Version != "" {
 		parts = append(parts, "version", dep.Version)
+	} else if dep.UseLatestCommit {
+		parts = append(parts, "latest-commit")
 	} else {
 		parts = append(parts, "latest")
 	}

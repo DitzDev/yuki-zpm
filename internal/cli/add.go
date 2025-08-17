@@ -46,7 +46,7 @@ func runAdd(packageSpec string, dev, build bool, alias, rootFile, branch string)
 		return fmt.Errorf("manifest not found: %w", err)
 	}
 
-	packageName, version, gitURL, err := parsePackageSpec(packageSpec)
+	packageName, version, gitURL, isLatestCommit, err := parsePackageSpec(packageSpec)
 	if err != nil {
 		return fmt.Errorf("invalid package specification: %w", err)
 	}
@@ -64,14 +64,18 @@ func runAdd(packageSpec string, dev, build bool, alias, rootFile, branch string)
 		Version: version,
 	}
 
-	// Set branch if specified
+	if isLatestCommit {
+		dep.UseLatestCommit = true
+		logger.Info("Using latest commit (no version specified)")
+	}
+
 	if branch != "" {
 		dep.Branch = branch
 		logger.Info("Using branch: %s", branch)
-		// Clear version when branch is specified to avoid conflicts
 		if version != "" {
 			logger.Warn("Version '%s' specified with --branch flag. Branch takes precedence.", version)
 			dep.Version = ""
+			dep.UseLatestCommit = false
 		}
 	}
 
@@ -111,7 +115,15 @@ func runAdd(packageSpec string, dev, build bool, alias, rootFile, branch string)
 		return fmt.Errorf("dependency fetch failed: %w", err)
 	}
 	logger.Success("✓ Dependency is accessible and valid")
-	logger.Info("Found version: %s", fetchResult.Version)
+
+	if isLatestCommit && fetchResult.CommitSHA != "" {
+		dep.Rev = fetchResult.CommitSHA
+		dep.UseLatestCommit = false 
+		dep.Version = ""
+		logger.Info("Found latest commit SHA: %s", fetchResult.CommitSHA)
+	} else {
+		logger.Info("Found version: %s", fetchResult.Version)
+	}
 
 	logger.Info("Adding dependency to manifest...")
 	
@@ -143,7 +155,13 @@ func runAdd(packageSpec string, dev, build bool, alias, rootFile, branch string)
 	if err := m.Save(cwd); err != nil {
 		return fmt.Errorf("failed to save manifest: %w", err)
 	}
-	logger.Info("📦 Dependency '%s@%s' has been added to your project!", dependencyName, fetchResult.Version)
+
+	if dep.Rev != "" {
+		logger.Info("📦 Dependency '%s@%s' has been added to your project!", dependencyName, dep.Rev)
+	} else {
+		logger.Info("📦 Dependency '%s@%s' has been added to your project!", dependencyName, fetchResult.Version)
+	}
+	
 	if alias != "" {
 		logger.Info("   Original package: %s", packageName)
 		logger.Info("   Alias: %s", alias)
@@ -153,6 +171,9 @@ func runAdd(packageSpec string, dev, build bool, alias, rootFile, branch string)
 	}
 	if dep.Branch != "" {
 		logger.Info("   Branch: %s", dep.Branch)
+	}
+	if dep.Rev != "" {
+		logger.Info("   Commit SHA: %s", dep.Rev)
 	}
 	logger.Info("")
 	logger.Info("🚀 Next steps:")
@@ -181,27 +202,31 @@ func existsInDependencies(m *manifest.Manifest, name string) bool {
 	return false
 }
 
-func parsePackageSpec(packageSpec string) (name, version, gitURL string, err error) {
-	// Handle different formats:
-	// - package@version
-	// - username/repo@version (with version)
-	// - username/repo (without version - will use latest)
-	// - https://github.com/username/repo@version
-	// - https://github.com/username/repo (without version - will use latest)
-
+func parsePackageSpec(packageSpec string) (name, version, gitURL string, isLatestCommit bool, err error) {
 	parts := strings.Split(packageSpec, "@")
 	if len(parts) > 2 {
-		return "", "", "", fmt.Errorf("invalid package specification format")
+		return "", "", "", false, fmt.Errorf("invalid package specification format")
 	}
 
 	packageURL := parts[0]
-	hasVersion := len(parts) == 2
-	if hasVersion {
-		version = parts[1]
+	hasVersionSpec := len(parts) == 2
+	
+	if !hasVersionSpec {
+		isLatestCommit = true
+		version = ""
+	} else {
+		versionSpec := parts[1]
+		if versionSpec == "latest" {
+			isLatestCommit = false
+			version = "latest"
+		} else {
+			isLatestCommit = false
+			version = versionSpec
+		}
 	}
 
 	if !strings.Contains(packageURL, "/") {
-		return "", "", "", fmt.Errorf("package must be in 'username/repo' format")
+		return "", "", "", false, fmt.Errorf("package must be in 'username/repo' format")
 	}
 
 	if !strings.HasPrefix(packageURL, "http") {
@@ -221,12 +246,8 @@ func parsePackageSpec(packageSpec string) (name, version, gitURL string, err err
 	}
 
 	if name == "" {
-		return "", "", "", fmt.Errorf("could not determine package name")
+		return "", "", "", false, fmt.Errorf("could not determine package name")
 	}
 
-	if !hasVersion {
-		version = ""
-	}
-
-	return name, version, gitURL, nil
+	return name, version, gitURL, isLatestCommit, nil
 }

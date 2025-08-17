@@ -31,12 +31,13 @@ type PackageInfo struct {
 }
 
 type Dependency struct {
-        Git     string `toml:"git"`
-        Version string `toml:"version"`
-        Branch  string `toml:"branch,omitempty"`
-        Tag     string `toml:"tag,omitempty"`
-        Rev     string `toml:"rev,omitempty"`
-        RootFile string `toml:"root_file,omitempty"`
+        Git               string `toml:"git"`
+        Version           string `toml:"version"`
+        Branch            string `toml:"branch,omitempty"`
+        Tag               string `toml:"tag,omitempty"`
+        Rev               string `toml:"rev,omitempty"`
+        RootFile           string `toml:"root_file,omitempty"`
+        UseLatestCommit bool   `toml:"-"`
 }
 
 type LockFile struct {

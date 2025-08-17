@@ -86,9 +86,6 @@ func (r *Resolver) resolveDependency(name string, dep manifest.Dependency, resol
 	
 	resolved[name] = resolvedDep
 	
-	
-	
-	
 	return nil
 }
 
@@ -103,7 +100,20 @@ func (r *Resolver) resolveVersion(owner, repo string, dep manifest.Dependency) (
 		return dep.Branch, nil
 	}
 
+	if dep.UseLatestCommit {
+		logger.Debug("Using latest commit for %s/%s", owner, repo)
+		return "main", nil
+	}
+
 	if dep.Version != "" {
+		if dep.Version == "latest" {
+			if release, err := r.githubClient.GetLatestRelease(owner, repo); err == nil {
+				logger.Debug("Using latest release: %s", release.TagName)
+				return release.TagName, nil
+			}
+			return "", fmt.Errorf("no releases found for %s/%s", owner, repo)
+		}
+	
 		constraint, err := semver.ParseConstraint(dep.Version)
 		if err != nil {
 			return "", fmt.Errorf("invalid version constraint '%s': %w", dep.Version, err)
@@ -189,7 +199,7 @@ func (r *Resolver) ValidateDependencies(m *manifest.Manifest) error {
 			return fmt.Errorf("dependency '%s' repository not accessible: %w", name, err)
 		}
 
-		if dep.Version != "" {
+		if dep.Version != "" && dep.Version != "latest" {
 			if _, err := semver.ParseConstraint(dep.Version); err != nil {
 				return fmt.Errorf("dependency '%s' has invalid version constraint '%s': %w", name, dep.Version, err)
 			}

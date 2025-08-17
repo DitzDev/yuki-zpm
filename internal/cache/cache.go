@@ -17,6 +17,7 @@ type Entry struct {
 	Path     string `json:"path"`
 	Checksum string `json:"checksum"`
 	Version  string `json:"version"`
+	CommitSHA string 
 }
 
 func New() *Cache {
