@@ -20,7 +20,6 @@ type Manifest struct {
 type PackageInfo struct {
         Name        string   `toml:"name"`
         Version     string   `toml:"version"`
-        Edition     string   `toml:"edition"`
         Authors     []string `toml:"authors"`
         License     string   `toml:"license"`
         Description string   `toml:"description"`
