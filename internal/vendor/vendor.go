@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"strings"
 
-	"yuki/internal/logger"
-	"yuki/internal/manifest"
+	"yuki_zpm.org/logger"
+	"yuki_zpm.org/manifest"
 )
 
 const (
